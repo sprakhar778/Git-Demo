@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Voice Agent</title>
+  <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #111;
+      min-height: 100vh;
+      font-family: system-ui, sans-serif;
+    }
+
+    /* ---- Transcript ---- */
+    #transcript {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      padding: 20px 16px 100px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .msg {
+      max-width: 70%;
+      padding: 10px 14px;
+      border-radius: 16px;
+      font-size: 14px;
+      line-height: 1.5;
+      word-break: break-word;
+    }
+    .msg.user {
+      align-self: flex-end;
+      background: #6366f1;
+      color: #fff;
+      border-bottom-right-radius: 4px;
+    }
+    .msg.agent {
+      align-self: flex-start;
+      background: #1c1c1e;
+      color: #e5e5e7;
+      border: 0.5px solid rgba(255,255,255,0.08);
+      border-bottom-left-radius: 4px;
+    }
+    .msg.agent.partial { opacity: 0.55; font-style: italic; }
+
+    /* ---- Floating bubble ---- */
+    #bubble {
+      position: fixed;
+      bottom: 28px;
+      right: 28px;
+      width: 64px;
+      height: 64px;
+      border-radius: 50%;
+      cursor: pointer;
+      overflow: hidden;
+      border: 2.5px solid rgba(255,255,255,0.15);
+      transition: transform 0.18s, border-color 0.18s;
+      z-index: 9999;
+    }
+    #bubble:hover { transform: scale(1.08); border-color: rgba(255,255,255,0.35); }
+    #bubble.listening { border-color: #6366f1; animation: pulse-ring 1.4s ease-out infinite; }
+    #bubble.speaking  { animation: pulse-ring-green 0.9s ease-out infinite; }
+
+    #bubble img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+    @keyframes pulse-ring {
+      0%   { box-shadow: 0 0 0 0px rgba(99,102,241,0.5); }
+      70%  { box-shadow: 0 0 0 10px rgba(99,102,241,0); }
+      100% { box-shadow: 0 0 0 0px rgba(99,102,241,0); }
+    }
+    @keyframes pulse-ring-green {
+      0%   { box-shadow: 0 0 0 0px rgba(52,211,153,0.5); }
+      70%  { box-shadow: 0 0 0 10px rgba(52,211,153,0); }
+      100% { box-shadow: 0 0 0 0px rgba(52,211,153,0); }
+    }
+
+    /* ---- Setup popup ---- */
+    #popup {
+      position: fixed;
+      bottom: 104px;
+      right: 28px;
+      width: 220px;
+      background: #1c1c1e;
+      border: 0.5px solid rgba(255,255,255,0.1);
+      border-radius: 16px;
+      padding: 16px;
+      z-index: 9998;
+      display: none;
+      flex-direction: column;
+      gap: 10px;
+    }
+    #popup.open { display: flex; }
+
+    #btn-go {
+      width: 100%;
+      padding: 10px;
+      background: #6366f1;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+    #btn-go:hover { opacity: 0.88; }
+    #btn-go:disabled { opacity: 0.45; cursor: default; }
+
+    #status-text {
+      font-size: 12px;
+      color: #555;
+      text-align: center;
+    }
+    #status-text.active { color: #34d399; }
+    #status-text.error  { color: #f87171; }
+
+    #btn-disconnect {
+      width: 100%;
+      padding: 8px;
+      background: transparent;
+      color: #666;
+      border: 0.5px solid rgba(255,255,255,0.1);
+      border-radius: 8px;
+      font-size: 13px;
+      cursor: pointer;
+      display: none;
+    }
+    #btn-disconnect:hover { color: #f87171; border-color: #f87171; }
+
+    #audio-sink { display: none; }
+  </style>
+</head>
+<body>
+
+  <div id="transcript"></div>
+
+  <div id="bubble" title="Talk to agent">
+    <img src="https://api.dicebear.com/7.x/micah/svg?seed=agent&backgroundColor=4f46e5" alt="Agent" />
+  </div>
+
+  <div id="popup">
+    <button id="btn-go">Connect &amp; Talk</button>
+    <p id="status-text">Click to connect to the voice agent</p>
+    <button id="btn-disconnect">Disconnect</button>
+  </div>
+
+  <div id="audio-sink"></div>
+
+<script>
+const { Room, RoomEvent, Track, RemoteParticipant } = LivekitClient;
+
+const bubble     = document.getElementById("bubble");
+const popup      = document.getElementById("popup");
+const btnGo      = document.getElementById("btn-go");
+const btnDisco   = document.getElementById("btn-disconnect");
+const statusEl   = document.getElementById("status-text");
+const audioSink  = document.getElementById("audio-sink");
+const transcript = document.getElementById("transcript");
+
+let room = null;
+let connected = false;
+let tUserStopped = 0;
+
+const partials = { user: null, agent: null };
+
+function addMessage(role, text, isFinal) {
+  if (!isFinal) {
+    if (!partials[role]) {
+      partials[role] = document.createElement("div");
+      partials[role].className = `msg ${role} partial`;
+      transcript.appendChild(partials[role]);
+    }
+    partials[role].textContent = text;
+    transcript.scrollTop = transcript.scrollHeight;
+    return;
+  }
+  const el = partials[role] || document.createElement("div");
+  el.className = `msg ${role}`;
+  el.textContent = text;
+  if (!partials[role]) transcript.appendChild(el);
+  partials[role] = null;
+  transcript.scrollTop = transcript.scrollHeight;
+}
+
+bubble.addEventListener("click", async () => {
+  if (connected) return;
+  await connect();
+});
+
+async function connect() {
+  try { await new AudioContext().resume(); } catch(_) {}
+
+  const projectId = (new URLSearchParams(window.location.search).get("project_id") || "").replace(/\/+$/, "");
+  if (!projectId) {
+    setStatus("Missing project_id in URL", "error");
+    return;
+  }
+
+  setStatus("Connecting…");
+
+  let url, token;
+  try {
+    const resp = await fetch(`/token?project_id=${encodeURIComponent(projectId)}`);
+    if (!resp.ok) throw new Error(`Server returned ${resp.status}`);
+    ({ url, token } = await resp.json());
+  } catch (e) {
+    setStatus("Could not get token: " + e.message, "error");
+    return;
+  }
+
+  setStatus("Connecting…");
+  room = new Room();
+
+  room.on(RoomEvent.TranscriptionReceived, (segments, participant) => {
+    const isUser = participant === room.localParticipant;
+    const role   = isUser ? "user" : "agent";
+    for (const seg of segments) {
+      addMessage(role, seg.text, seg.isFinal);
+    }
+  });
+
+  room.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
+    const localTalking = speakers.some(s => s === room.localParticipant);
+    const agentTalking = speakers.some(s => s instanceof RemoteParticipant);
+
+    if (!localTalking && tUserStopped === 0) tUserStopped = performance.now();
+    if (localTalking) tUserStopped = 0;
+
+    bubble.className = agentTalking ? "speaking" : (connected ? "listening" : "");
+  });
+
+  room.on(RoomEvent.TrackSubscribed, (track, pub, participant) => {
+    if (track.kind === Track.Kind.Audio) {
+      if (tUserStopped > 0) {
+        const rtt = ((performance.now() - tUserStopped) / 1000).toFixed(2);
+        console.log(`[TIMER] End-to-end latency: ${rtt}s`);
+        tUserStopped = 0;
+      }
+      const el = track.attach();
+      el.autoplay = true;
+      audioSink.appendChild(el);
+      el.play().catch(() => {});
+    }
+  });
+
+  room.on(RoomEvent.TrackUnsubscribed, (track) => track.detach());
+
+  room.on(RoomEvent.Disconnected, () => {
+    connected = false;
+    bubble.className = "";
+    popup.classList.add("open");
+    btnGo.disabled = false;
+    btnDisco.style.display = "none";
+    setStatus("Disconnected — click to reconnect");
+  });
+
+  try {
+    await room.connect(url, token);
+    connected = true;
+    bubble.className = "listening";
+    btnDisco.style.display = "block";
+    setStatus("Enabling microphone…");
+    if (!navigator.mediaDevices) {
+      throw new Error("Mic blocked — open via http://localhost:" + location.port);
+    }
+    await room.localParticipant.setMicrophoneEnabled(true);
+    setStatus("Connected — speak now", "active");
+  } catch (e) {
+    setStatus("Failed: " + e.message, "error");
+    btnGo.disabled = false;
+  }
+}
+
+btnDisco.addEventListener("click", async () => {
+  if (room) await room.disconnect();
+});
+
+function setStatus(msg, cls = "") {
+  statusEl.textContent = msg;
+  statusEl.className = cls;
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,25 @@
+[project]
+name = "vocie-pipeline"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "faster-whisper>=1.1.1",
+    "langchain>=1.3.2",
+    "langchain-openai>=1.2.2",
+    "livekit-agents[openai,silero,turn-detector]~=1.0",
+    "livekit-api>=1.1.0",
+    "numpy>=2.4.6",
+    "python-dotenv>=1.2.2",
+    "scipy>=1.17.1",
+    "supertonic>=1.3.1",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.32.0",
+    "livekit-plugins-langchain>=1.5.14",
+    "livekit-plugins-ai-coustics>=0.2.15",
+    "livekit-plugins-sarvam>=1.5.17",
+    "langsmith>=0.8.6",
+    "livekit>=1.1.8",
+    "pymongo>=4.0.0",
+]
